@@ -1,7 +1,7 @@
 {
 	"name": "file-type",
-	"version": "19.0.0",
-	"description": "Detect the file type of a Buffer/Uint8Array/ArrayBuffer",
+	"version": "20.0.0",
+	"description": "Detect the file type of a file, stream, or data",
 	"license": "MIT",
 	"repository": "sindresorhus/file-type",
 	"funding": "https://github.com/sindresorhus/file-type?sponsor=1",
@@ -13,10 +13,19 @@
 	"type": "module",
 	"exports": {
 		".": {
-			"node": "./index.js",
-			"default": "./browser.js"
+			"node": {
+				"types": "./index.d.ts",
+				"import": "./index.js"
+			},
+			"default": {
+				"types": "./core.d.ts",
+				"import": "./core.js"
+			}
 		},
-		"./core": "./core.js"
+		"./core": {
+			"types": "./core.d.ts",
+			"import": "./core.js"
+		}
 	},
 	"sideEffects": false,
 	"engines": {
@@ -28,8 +37,6 @@
 	"files": [
 		"index.js",
 		"index.d.ts",
-		"browser.js",
-		"browser.d.ts",
 		"core.js",
 		"core.d.ts",
 		"supported.js",
@@ -207,21 +214,43 @@
 		"ace",
 		"avro",
 		"icc",
-		"fbx"
+		"fbx",
+		"vsdx",
+		"vtt",
+		"apk",
+		"drc",
+		"lz4",
+		"potx",
+		"xltx",
+		"dotx",
+		"xltm",
+		"ots",
+		"odg",
+		"otg",
+		"otp",
+		"ott",
+		"xlsm",
+		"docm",
+		"dotm",
+		"potm",
+		"pptm",
+		"jar"
 	],
 	"dependencies": {
-		"readable-web-to-node-stream": "^3.0.2",
-		"strtok3": "^7.0.0",
-		"token-types": "^5.0.1"
+		"@tokenizer/inflate": "^0.2.6",
+		"strtok3": "^10.0.1",
+		"token-types": "^6.0.0",
+		"uint8array-extras": "^1.4.0"
 	},
 	"devDependencies": {
 		"@tokenizer/token": "^0.3.0",
-		"@types/node": "^20.10.7",
+		"@types/node": "^22.10.5",
 		"ava": "^6.0.1",
-		"commonmark": "^0.30.0",
+		"commonmark": "^0.31.2",
+		"get-stream": "^9.0.1",
 		"noop-stream": "^1.0.0",
-		"tsd": "^0.30.3",
-		"xo": "^0.56.0"
+		"tsd": "^0.31.2",
+		"xo": "^0.60.0"
 	},
 	"xo": {
 		"envs": [

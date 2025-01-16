@@ -1,9 +1,8 @@
-import {Buffer} from 'node:buffer';
 import {createReadStream} from 'node:fs';
 import {expectType} from 'tsd';
 import {
 	type FileTypeResult as FileTypeResultBrowser,
-} from './browser.js';
+} from './core.js';
 import {
 	fileTypeFromBlob,
 	fileTypeFromBuffer,
@@ -14,19 +13,16 @@ import {
 	supportedMimeTypes,
 	type FileTypeResult,
 	type ReadableStreamWithFileType,
-	type FileExtension,
-	type MimeType,
 } from './index.js';
 
-expectType<Promise<FileTypeResult | undefined>>(fileTypeFromBuffer(Buffer.from([0xFF, 0xD8, 0xFF])));
 expectType<Promise<FileTypeResult | undefined>>(fileTypeFromBuffer(new Uint8Array([0xFF, 0xD8, 0xFF])));
 expectType<Promise<FileTypeResult | undefined>>(fileTypeFromBuffer(new ArrayBuffer(42)));
 
 (async () => {
-	const result = await fileTypeFromBuffer(Buffer.from([0xFF, 0xD8, 0xFF]));
+	const result = await fileTypeFromBuffer(new Uint8Array([0xFF, 0xD8, 0xFF]));
 	if (result !== undefined) {
-		expectType<FileExtension>(result.ext);
-		expectType<MimeType>(result.mime);
+		expectType<string>(result.ext);
+		expectType<string>(result.mime);
 	}
 })();
 
@@ -35,8 +31,8 @@ expectType<Promise<FileTypeResult | undefined>>(fileTypeFromBuffer(new ArrayBuff
 
 	const result = await fileTypeFromFile('myFile');
 	if (result !== undefined) {
-		expectType<FileExtension>(result.ext);
-		expectType<MimeType>(result.mime);
+		expectType<string>(result.ext);
+		expectType<string>(result.mime);
 	}
 })();
 
@@ -47,14 +43,14 @@ expectType<Promise<FileTypeResult | undefined>>(fileTypeFromBuffer(new ArrayBuff
 
 	const result = await fileTypeFromStream(stream);
 	if (result !== undefined) {
-		expectType<FileExtension>(result.ext);
-		expectType<MimeType>(result.mime);
+		expectType<string>(result.ext);
+		expectType<string>(result.mime);
 	}
 })();
 
-expectType<ReadonlySet<FileExtension>>(supportedExtensions);
+expectType<ReadonlySet<string>>(supportedExtensions);
 
-expectType<ReadonlySet<MimeType>>(supportedMimeTypes);
+expectType<ReadonlySet<string>>(supportedMimeTypes);
 
 const readableStream = createReadStream('file.png');
 const streamWithFileType = fileTypeStream(readableStream);
@@ -65,4 +61,4 @@ expectType<Promise<ReadableStreamWithFileType>>(streamWithFileType);
 })();
 
 // Browser
-expectType<Promise<FileTypeResultBrowser | undefined>>(fileTypeFromBlob(new Blob()));
+expectType<Promise<FileTypeResultBrowser | undefined>>(fileTypeFromBlob(new Blob([])));

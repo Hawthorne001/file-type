@@ -1,22 +1,24 @@
 import process from 'node:process';
-import {Buffer} from 'node:buffer';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import fs from 'node:fs';
+import {readFile} from 'node:fs/promises';
 import stream from 'node:stream';
 import test from 'ava';
 import {readableNoopStream} from 'noop-stream';
 import {Parser as ReadmeParser} from 'commonmark';
 import * as strtok3 from 'strtok3/core';
+import {areUint8ArraysEqual} from 'uint8array-extras';
+import {getStreamAsArrayBuffer} from 'get-stream';
 import {
 	fileTypeFromBuffer,
-	fileTypeFromStream,
+	fileTypeFromStream as fileTypeNodeFromStream,
 	fileTypeFromFile,
 	fileTypeFromBlob,
-	FileTypeParser,
 	fileTypeStream,
 	supportedExtensions,
 	supportedMimeTypes,
+	FileTypeParser,
 } from './index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -25,7 +27,10 @@ const missingTests = new Set([
 	'mpc',
 ]);
 
-const types = [...supportedExtensions].filter(ext => !missingTests.has(ext));
+const [nodeMajorVersion] = process.versions.node.split('.').map(Number);
+const nodeVersionSupportingByteBlobStream = 20;
+
+const types = [...supportedExtensions].filter(extension => !missingTests.has(extension));
 
 // Define an entry here only if the fixture has a different
 // name than `fixture` or if you want multiple fixtures
@@ -48,6 +53,9 @@ const names = {
 	],
 	dng: [
 		'fixture-Leica-M10',
+	],
+	drc: [
+		'fixture-cube_pc',
 	],
 	epub: [
 		'fixture',
@@ -252,6 +260,19 @@ const names = {
 		'fixture-bin',
 		'fixture-ascii',
 	],
+	vsdx: [
+		'fixture-vsdx',
+		'fixture-vstx',
+	],
+	vtt: [
+		'fixture-vtt-linebreak',
+		'fixture-vtt-space',
+		'fixture-vtt-tab',
+		'fixture-vtt-eof',
+	],
+	lz4: [
+		'fixture',
+	],
 };
 
 // Define an entry here only if the file type has potential
@@ -264,7 +285,7 @@ const falsePositives = {
 
 // Known failing fixture
 const failingFixture = new Set([
-	'fixture-password-protected',
+	'fixture-password-protected', // .xls, Excel / MS-OSHARED / Compound-File-Binary-Format
 ]);
 
 async function checkBufferLike(t, type, bufferLike) {
@@ -286,31 +307,31 @@ async function checkFile(t, type, filePath) {
 	t.is(typeof mime, 'string');
 }
 
-async function testFromFile(t, ext, name) {
-	const file = path.join(__dirname, 'fixture', `${(name ?? 'fixture')}.${ext}`);
-	return checkFile(t, ext, file);
+async function testFromFile(t, extension, name) {
+	const file = path.join(__dirname, 'fixture', `${(name ?? 'fixture')}.${extension}`);
+	return checkFile(t, extension, file);
 }
 
-async function testFromBuffer(t, ext, name) {
-	const fixtureName = `${(name ?? 'fixture')}.${ext}`;
+async function testFromBuffer(t, extension, name) {
+	const fixtureName = `${(name ?? 'fixture')}.${extension}`;
 
 	const file = path.join(__dirname, 'fixture', fixtureName);
 	const chunk = fs.readFileSync(file);
-	await checkBufferLike(t, ext, chunk);
-	await checkBufferLike(t, ext, new Uint8Array(chunk));
-	await checkBufferLike(t, ext, chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength));
+	await checkBufferLike(t, extension, chunk);
+	await checkBufferLike(t, extension, new Uint8Array(chunk));
+	await checkBufferLike(t, extension, chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength));
 }
 
-async function testFromBlob(t, ext, name) {
-	const fixtureName = `${(name ?? 'fixture')}.${ext}`;
+async function testFromBlob(t, extension, name) {
+	const fixtureName = `${(name ?? 'fixture')}.${extension}`;
 
 	const file = path.join(__dirname, 'fixture', fixtureName);
 	const chunk = fs.readFileSync(file);
-	await checkBlobLike(t, ext, chunk);
+	await checkBlobLike(t, extension, chunk);
 }
 
-async function testFalsePositive(t, ext, name) {
-	const file = path.join(__dirname, 'fixture', `${name}.${ext}`);
+async function testFalsePositive(t, extension, name) {
+	const file = path.join(__dirname, 'fixture', `${name}.${extension}`);
 
 	await t.is(await fileTypeFromFile(file), undefined);
 
@@ -320,49 +341,67 @@ async function testFalsePositive(t, ext, name) {
 	t.is(await fileTypeFromBuffer(chunk.buffer), undefined);
 }
 
-async function testFileFromStream(t, ext, name) {
-	const filename = `${(name ?? 'fixture')}.${ext}`;
+async function testFileNodeFromStream(t, extension, name) {
+	const filename = `${(name ?? 'fixture')}.${extension}`;
 	const file = path.join(__dirname, 'fixture', filename);
-	const fileType = await fileTypeFromStream(fs.createReadStream(file));
+	const fileType = await fileTypeNodeFromStream(fs.createReadStream(file));
 
 	t.truthy(fileType, `identify ${filename}`);
-	t.is(fileType.ext, ext, 'fileType.ext');
+	t.is(fileType.ext, extension, 'fileType.ext');
 	t.is(typeof fileType.mime, 'string', 'fileType.mime');
 }
 
-async function loadEntireFile(readable) {
-	const buffer = [];
-	for await (const chunk of readable) {
-		buffer.push(Buffer.from(chunk));
-	}
-
-	return Buffer.concat(buffer);
+async function getStreamAsUint8Array(stream) {
+	return new Uint8Array(await getStreamAsArrayBuffer(stream));
 }
 
-async function testStream(t, ext, name) {
-	const fixtureName = `${(name ?? 'fixture')}.${ext}`;
+async function testStreamWithNodeStream(t, extension, name) {
+	const fixtureName = `${(name ?? 'fixture')}.${extension}`;
 	const file = path.join(__dirname, 'fixture', fixtureName);
 
 	const readableStream = await fileTypeStream(fs.createReadStream(file));
 	const fileStream = fs.createReadStream(file);
 
-	const [bufferA, bufferB] = await Promise.all([loadEntireFile(readableStream), loadEntireFile(fileStream)]);
+	const [bufferA, bufferB] = await Promise.all([getStreamAsUint8Array(readableStream), getStreamAsUint8Array(fileStream)]);
 
-	t.true(bufferA.equals(bufferB));
+	t.true(areUint8ArraysEqual(bufferA, bufferB));
 }
+
+async function testStreamWithWebStream(t, extension, name) {
+	const fixtureName = `${(name ?? 'fixture')}.${extension}`;
+	const file = path.join(__dirname, 'fixture', fixtureName);
+	// Read the file into a buffer
+	const fileBuffer = await readFile(file);
+	// Create a Blob from the buffer
+	const blob = new Blob([fileBuffer]);
+	const webStream = await fileTypeStream(blob.stream());
+	t.false(webStream.locked);
+	const webStreamResult = await getStreamAsUint8Array(webStream);
+	t.false(webStream.locked, 'Ensure web-stream is released');
+	t.true(areUint8ArraysEqual(fileBuffer, webStreamResult));
+}
+
+test('Test suite must be able to detect Node.js major version', t => {
+	t.is(typeof nodeMajorVersion, 'number', 'Detected Node.js major version should be a number');
+});
 
 let i = 0;
 for (const type of types) {
-	if (Object.prototype.hasOwnProperty.call(names, type)) {
+	if (Object.hasOwn(names, type)) {
 		for (const name of names[type]) {
 			const fixtureName = `${name}.${type}`;
 			const _test = failingFixture.has(fixtureName) ? test.failing : test;
 
 			_test(`${name}.${type} ${i++} .fileTypeFromFile() method - same fileType`, testFromFile, type, name);
 			_test(`${name}.${type} ${i++} .fileTypeFromBuffer() method - same fileType`, testFromBuffer, type, name);
-			_test(`${name}.${type} ${i++} .fileTypeFromBlob() method - same fileType`, testFromBlob, type, name);
-			_test(`${name}.${type} ${i++} .fileTypeFromStream() method - same fileType`, testFileFromStream, type, name);
-			test(`${name}.${type} ${i++} .fileTypeStream() - identical streams`, testStream, type, name);
+			if (nodeMajorVersion >= nodeVersionSupportingByteBlobStream) {
+				// Blob requires to stream to BYOB ReadableStream, requiring Node.js ≥ 20
+				_test(`${name}.${type} ${i++} .fileTypeFromBlob() method - same fileType`, testFromBlob, type, name);
+				test(`${name}.${type} ${i++} .fileTypeStream() - identical Web Streams`, testStreamWithWebStream, type, name);
+			}
+
+			_test(`${name}.${type} ${i++} .fileTypeFromStream() Node.js method - same fileType`, testFileNodeFromStream, type, name);
+			_test(`${name}.${type} ${i++} .fileTypeStream() - identical Node.js Readable streams`, testStreamWithNodeStream, type, name);
 		}
 	} else {
 		const fixtureName = `fixture.${type}`;
@@ -370,11 +409,11 @@ for (const type of types) {
 
 		_test(`${type} ${i++} .fileTypeFromFile()`, testFromFile, type);
 		_test(`${type} ${i++} .fileTypeFromBuffer()`, testFromBuffer, type);
-		_test(`${type} ${i++} .fileTypeFromStream()`, testFileFromStream, type);
-		test(`${type} ${i++} .fileTypeStream() - identical streams`, testStream, type);
+		_test(`${type} ${i++} .fileTypeFromStream() Node.js`, testFileNodeFromStream, type);
+		test(`${type} ${i++} .fileTypeStream() - identical streams`, testStreamWithNodeStream, type);
 	}
 
-	if (Object.prototype.hasOwnProperty.call(falsePositives, type)) {
+	if (Object.hasOwn(falsePositives, type)) {
 		for (const falsePositiveFile of falsePositives[type]) {
 			test(`false positive - ${type} ${i++}`, testFalsePositive, type, falsePositiveFile);
 		}
@@ -387,7 +426,7 @@ test('.fileTypeStream() method - empty stream', async t => {
 });
 
 test('.fileTypeStream() method - short stream', async t => {
-	const bufferA = Buffer.from([0, 1, 0, 1]);
+	const bufferA = new Uint8Array([0, 1, 0, 1]);
 	class MyStream extends stream.Readable {
 		_read() {
 			this.push(bufferA);
@@ -401,7 +440,7 @@ test('.fileTypeStream() method - short stream', async t => {
 	t.is(newStream.fileType, undefined);
 
 	// Test usability of returned stream
-	const bufferB = await loadEntireFile(newStream);
+	const bufferB = await getStreamAsUint8Array(newStream);
 	t.deepEqual(bufferA, bufferB);
 });
 
@@ -435,6 +474,26 @@ test('.fileTypeStream() method - sampleSize option', async t => {
 	t.is(stream.fileType.mime, 'video/ogg');
 });
 
+test('.fileTypeFromStream() method - be able to abort operation', async t => {
+	const bufferA = new Uint8Array([0, 1, 0, 1]);
+	class MyStream extends stream.Readable {
+		_read() {
+			setTimeout(() => {
+				this.push(bufferA);
+				this.push(null);
+			}, 500);
+		}
+	}
+
+	const shortStream = new MyStream();
+	const abortController = new AbortController();
+	const parser = new FileTypeParser({signal: abortController.signal});
+	const promiseFileType = parser.fromStream(shortStream);
+	abortController.abort(); // Abort asynchronous operation: reading from shortStream
+	const error = await t.throwsAsync(promiseFileType);
+	t.is(error.message, 'Stream closed');
+});
+
 test('supportedExtensions.has', t => {
 	t.true(supportedExtensions.has('jpg'));
 	t.false(supportedExtensions.has('blah'));
@@ -450,8 +509,6 @@ test('validate the input argument type', async t => {
 		message: /Expected the `input` argument to be of type `Uint8Array`/,
 	});
 
-	await t.notThrowsAsync(fileTypeFromBuffer(Buffer.from('x')));
-
 	await t.notThrowsAsync(fileTypeFromBuffer(new Uint8Array()));
 
 	await t.notThrowsAsync(fileTypeFromBuffer(new ArrayBuffer()));
@@ -461,35 +518,14 @@ test('validate the repo has all extensions and mimes in sync', t => {
 	// File: core.js (base truth)
 	function readIndexJS() {
 		const core = fs.readFileSync('core.js', {encoding: 'utf8'});
-		const extArray = core.match(/(?<=ext:\s')(.*)(?=',)/g);
+		const extensionArray = core.match(/(?<=ext:\s')(.*)(?=',)/g);
 		const mimeArray = core.match(/(?<=mime:\s')(.*)(?=')/g);
-		const exts = new Set(extArray);
+		const extensions = new Set(extensionArray);
 		const mimes = new Set(mimeArray);
 
 		return {
-			exts,
+			exts: extensions,
 			mimes,
-		};
-	}
-
-	// File: core.d.ts
-	function readIndexDTS() {
-		const core = fs.readFileSync('core.d.ts', {encoding: 'utf8'});
-		const matches = core.match(/(?<=\|\s')(.*)(?=')/g);
-		const extArray = [];
-		const mimeArray = [];
-
-		for (const match of matches) {
-			if (match.includes('/')) {
-				mimeArray.push(match);
-			} else {
-				extArray.push(match);
-			}
-		}
-
-		return {
-			extArray,
-			mimeArray,
 		};
 	}
 
@@ -521,15 +557,15 @@ test('validate the repo has all extensions and mimes in sync', t => {
 			'webassembly',
 		]);
 
-		const extArray = keywords.filter(keyword => !allowedExtras.has(keyword));
-		return extArray;
+		const extensionArray = keywords.filter(keyword => !allowedExtras.has(keyword));
+		return extensionArray;
 	}
 
 	// File: readme.md
 	function readReadmeMD() {
 		const index = fs.readFileSync('readme.md', {encoding: 'utf8'});
-		const extArray = index.match(/(?<=-\s\[`)(.*)(?=`)/g);
-		return extArray;
+		const extensionArray = index.match(/(?<=-\s\[`)(.*)(?=`)/g);
+		return extensionArray;
 	}
 
 	// Helpers
@@ -565,21 +601,20 @@ test('validate the repo has all extensions and mimes in sync', t => {
 	}
 
 	// Test runner
-	function validate(found, baseTruth, fileName, extOrMime) {
+	function validate(found, baseTruth, fileName, extensionOrMime) {
 		const duplicates = findDuplicates(found);
 		const extras = findExtras(found, baseTruth);
 		const missing = findMissing(found, baseTruth);
-		t.is(duplicates.length, 0, `Found duplicate ${extOrMime}: ${duplicates} in ${fileName}.`);
-		t.is(extras.length, 0, `Extra ${extOrMime}: ${extras} in ${fileName}.`);
-		t.is(missing.length, 0, `Missing ${extOrMime}: ${missing} in ${fileName}.`);
+		t.is(duplicates.length, 0, `Found duplicate ${extensionOrMime}: ${duplicates} in ${fileName}.`);
+		t.is(extras.length, 0, `Extra ${extensionOrMime}: ${extras} in ${fileName}.`);
+		t.is(missing.length, 0, `Missing ${extensionOrMime}: ${missing} in ${fileName}.`);
 	}
 
 	// Get the base truth of extensions and mimes supported from core.js
-	const {exts, mimes} = readIndexJS();
+	const {exts} = readIndexJS();
 
 	// Validate all extensions
 	const filesWithExtensions = {
-		'core.d.ts': readIndexDTS().extArray,
 		'supported.js': [...supportedExtensions],
 		'package.json': readPackageJSON(),
 		'readme.md': readReadmeMD(),
@@ -589,19 +624,6 @@ test('validate the repo has all extensions and mimes in sync', t => {
 		if (filesWithExtensions[fileName]) {
 			const foundExtensions = filesWithExtensions[fileName];
 			validate(foundExtensions, exts, fileName, 'extensions');
-		}
-	}
-
-	// Validate all mimes
-	const filesWithMimeTypes = {
-		'core.d.ts': readIndexDTS().mimeArray,
-		'supported.js': [...supportedMimeTypes],
-	};
-
-	for (const fileName in filesWithMimeTypes) {
-		if (filesWithMimeTypes[fileName]) {
-			const foundMimeTypes = filesWithMimeTypes[fileName];
-			validate(foundMimeTypes, mimes, fileName, 'mimes');
 		}
 	}
 });
@@ -620,14 +642,14 @@ test('odd file sizes', async t => {
 	const oddFileSizes = [1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 255, 256, 257, 511, 512, 513];
 
 	for (const size of oddFileSizes) {
-		const buffer = Buffer.alloc(size);
+		const buffer = new Uint8Array(size);
 		await t.notThrowsAsync(fileTypeFromBuffer(buffer), `fromBuffer: File size: ${size} bytes`);
 	}
 
 	for (const size of oddFileSizes) {
-		const buffer = Buffer.alloc(size);
+		const buffer = new Uint8Array(size);
 		const stream = new BufferedStream(buffer);
-		await t.notThrowsAsync(fileTypeFromStream(stream), `fromStream: File size: ${size} bytes`);
+		await t.notThrowsAsync(fileTypeNodeFromStream(stream), `fromStream: File size: ${size} bytes`);
 	}
 });
 
@@ -662,63 +684,76 @@ test('supported files types are listed alphabetically', async t => {
 
 test('corrupt MKV throws', async t => {
 	const filePath = path.join(__dirname, 'fixture/fixture-corrupt.mkv');
-	await t.throwsAsync(fileTypeFromFile(filePath), {message: /out of range/});
+	await t.throwsAsync(fileTypeFromFile(filePath), {message: /End-Of-Stream/});
 });
 
 // Create a custom detector for the just made up "unicorn" file type
-const unicornDetector = async tokenizer => {
-	const unicornHeader = [85, 78, 73, 67, 79, 82, 78]; // "UNICORN" as decimal string
-	const buffer = Buffer.alloc(7);
-	await tokenizer.peekBuffer(buffer, {length: unicornHeader.length, mayBeLess: true});
-	if (unicornHeader.every((value, index) => value === buffer[index])) {
-		return {ext: 'unicorn', mime: 'application/unicorn'};
-	}
+const unicornDetector = {
+	id: 'mock.unicorn',
+	async detect(tokenizer) {
+		const unicornHeader = [85, 78, 73, 67, 79, 82, 78]; // "UNICORN" as decimal string
+		const buffer = new Uint8Array(7);
+		await tokenizer.peekBuffer(buffer, {length: unicornHeader.length, mayBeLess: true});
+		if (unicornHeader.every((value, index) => value === buffer[index])) {
+			return {ext: 'unicorn', mime: 'application/unicorn'};
+		}
 
-	return undefined;
+		return undefined;
+	},
 };
 
-const mockPngDetector = _tokenizer => ({ext: 'mockPng', mime: 'image/mockPng'});
-
-const tokenizerPositionChanger = tokenizer => {
-	const buffer = Buffer.alloc(1);
-	tokenizer.readBuffer(buffer, {length: 1, mayBeLess: true});
+const mockPngDetector = {
+	id: 'mock.png',
+	detect: () => ({ext: 'mockPng', mime: 'image/mockPng'}),
 };
 
-test('fileTypeFromBlob should detect custom file type "unicorn" using custom detectors', async t => {
-	// Set up the "unicorn" file content
-	const header = 'UNICORN FILE\n';
-	const blob = new Blob([header]);
+const tokenizerPositionChanger = {
+	id: 'mock.dirtyTokenizer',
+	detect(tokenizer) {
+		const buffer = new Uint8Array(1);
+		tokenizer.readBuffer(buffer, {length: 1, mayBeLess: true});
+	},
+};
 
-	const customDetectors = [unicornDetector];
-	const parser = new FileTypeParser({customDetectors});
+if (nodeMajorVersion >= nodeVersionSupportingByteBlobStream) {
+	// Blob requires to stream to BYOB ReadableStream, requiring Node.js ≥ 20
 
-	const result = await parser.fromBlob(blob);
-	t.deepEqual(result, {ext: 'unicorn', mime: 'application/unicorn'});
-});
+	test('fileTypeFromBlob should detect custom file type "unicorn" using custom detectors', async t => {
+		// Set up the "unicorn" file content
+		const header = 'UNICORN FILE\n';
+		const blob = new Blob([header]);
 
-test('fileTypeFromBlob should keep detecting default file types when no custom detector matches', async t => {
-	const file = path.join(__dirname, 'fixture', 'fixture.png');
-	const chunk = fs.readFileSync(file);
-	const blob = new Blob([chunk]);
+		const customDetectors = [unicornDetector];
+		const parser = new FileTypeParser({customDetectors});
 
-	const customDetectors = [unicornDetector];
-	const parser = new FileTypeParser({customDetectors});
+		const result = await parser.fromBlob(blob);
+		t.deepEqual(result, {ext: 'unicorn', mime: 'application/unicorn'});
+	});
 
-	const result = await parser.fromBlob(blob);
-	t.deepEqual(result, {ext: 'png', mime: 'image/png'});
-});
+	test('fileTypeFromBlob should keep detecting default file types when no custom detector matches', async t => {
+		const file = path.join(__dirname, 'fixture', 'fixture.png');
+		const chunk = fs.readFileSync(file);
+		const blob = new Blob([chunk]);
 
-test('fileTypeFromBlob should allow overriding default file type detectors', async t => {
-	const file = path.join(__dirname, 'fixture', 'fixture.png');
-	const chunk = fs.readFileSync(file);
-	const blob = new Blob([chunk]);
+		const customDetectors = [unicornDetector];
+		const parser = new FileTypeParser({customDetectors});
 
-	const customDetectors = [mockPngDetector];
-	const parser = new FileTypeParser({customDetectors});
+		const result = await parser.fromBlob(blob);
+		t.deepEqual(result, {ext: 'png', mime: 'image/png'});
+	});
 
-	const result = await parser.fromBlob(blob);
-	t.deepEqual(result, {ext: 'mockPng', mime: 'image/mockPng'});
-});
+	test('fileTypeFromBlob should allow overriding default file type detectors', async t => {
+		const file = path.join(__dirname, 'fixture', 'fixture.png');
+		const chunk = fs.readFileSync(file);
+		const blob = new Blob([chunk]);
+
+		const customDetectors = [mockPngDetector];
+		const parser = new FileTypeParser({customDetectors});
+
+		const result = await parser.fromBlob(blob);
+		t.deepEqual(result, {ext: 'mockPng', mime: 'image/mockPng'});
+	});
+}
 
 test('fileTypeFromBuffer should detect custom file type "unicorn" using custom detectors', async t => {
 	const header = 'UNICORN FILE\n';
@@ -821,7 +856,7 @@ test('fileTypeFromTokenizer should return undefined when a custom detector chang
 	const header = 'UNICORN FILE\n';
 	const uint8ArrayContent = new TextEncoder().encode(header);
 
-	// Include the unicormDetector here to verify it's not used after the tokenizer.position changed
+	// Include the unicornDetector here to verify it's not used after the tokenizer.position changed
 	const customDetectors = [tokenizerPositionChanger, unicornDetector];
 	const parser = new FileTypeParser({customDetectors});
 
